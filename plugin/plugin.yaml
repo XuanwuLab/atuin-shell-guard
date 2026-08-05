@@ -1,0 +1,6 @@
+name: atuin-shell-guard
+version: "1.0.0"
+description: Block destructive terminal commands with Atuin Shell Guard.
+author: XuanwuLab
+provides_hooks:
+  - pre_tool_call

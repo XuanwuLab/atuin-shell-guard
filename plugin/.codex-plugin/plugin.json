@@ -1,0 +1,22 @@
+{
+  "name": "atuin-shell-guard",
+  "version": "1.0.0",
+  "description": "Verify Bash commands before Codex runs them.",
+  "repository": "https://github.com/XuanwuLab/atuin-shell-guard",
+  "hooks": "./codex-hooks.json",
+  "keywords": [
+    "hooks",
+    "bash",
+    "safety"
+  ],
+  "interface": {
+    "displayName": "Atuin Shell Guard",
+    "shortDescription": "Dry-run Bash safety checks",
+    "longDescription": "Checks Bash commands before Codex runs them and blocks commands that look destructive.",
+    "developerName": "XuanwuLab",
+    "category": "Security",
+    "capabilities": [
+      "Read"
+    ]
+  }
+}

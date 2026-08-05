@@ -1,0 +1,25 @@
+{
+  "name": "xuanwulab-atuin-shell-guard",
+  "owner": {
+    "name": "XuanwuLab"
+  },
+  "description": "Atuin Shell Guard plugin repository from XuanwuLab.",
+  "version": "1.0.0",
+  "plugins": [
+    {
+      "name": "atuin-shell-guard",
+      "source": "./plugin",
+      "description": "Verify Bash commands before Claude Code runs them.",
+      "version": "1.0.0",
+      "author": {
+        "name": "XuanwuLab"
+      },
+      "category": "Security",
+      "tags": [
+        "hooks",
+        "bash",
+        "safety"
+      ]
+    }
+  ]
+}

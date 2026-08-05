@@ -1,0 +1,31 @@
+{
+  "name": "atuin-shell-guard",
+  "version": "1.0.0",
+  "description": "Read-only dry-run shell guard in TypeScript",
+  "type": "module",
+  "main": "dist/bash/index.js",
+  "types": "dist/bash/index.d.ts",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node ./node_modules/typescript/bin/tsc --noEmit",
+    "lint": "node ./node_modules/eslint/bin/eslint.js .",
+    "test": "node --import tsx src/bash/__tests__/test.ts && node --import tsx src/powershell/__tests__/test.ts",
+    "bundle": "node ./node_modules/typescript/bin/tsc && node scripts/bundle.mjs bash",
+    "e2e": "node scripts/e2e.mjs",
+    "bench": "node scripts/bench.mjs",
+    "guardbench": "node scripts/guardbench.mjs",
+    "plugin": "node scripts/bundle.mjs plugin",
+    "plugin:test": "node plugin_test_harness/plugin_test.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.5.2",
+    "esbuild": "^0.27.7",
+    "eslint": "^10.3.0",
+    "eslint-plugin-n": "^18.0.1",
+    "globals": "^17.6.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.59.3"
+  }
+}

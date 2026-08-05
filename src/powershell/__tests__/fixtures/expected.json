@@ -1,0 +1,21 @@
+[
+  {
+    "script": "item-content.ps1",
+    "cwd": "/repo",
+    "effects": [
+      ["delete", "/repo/docs/a.pptx"],
+      ["delete", "/repo/docs/b.docx"],
+      ["write", "/repo/out/report.txt"]
+    ]
+  },
+  {
+    "script": "export-archive.ps1",
+    "cwd": "/repo",
+    "effects": [
+      ["write", "/repo/artifacts/app.zip"],
+      ["mkdir", "/repo/expanded"],
+      ["write", "/repo/expanded/<archive-contents>"],
+      ["write", "/repo/state.xml"]
+    ]
+  }
+]

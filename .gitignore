@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+__pycache__/
+*.py[cod]
+*.log
+.env
+.env.*
+.tmp/
+tmp-*/
+plugin/protector_log.txt

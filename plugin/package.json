@@ -1,0 +1,30 @@
+{
+  "name": "@xlab/atuin-shell-guard-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Local dry-run bash interpreter hook that blocks destructive shell commands before execution.",
+  "files": [
+    "__init__.py",
+    "atuin-shell-guard.cjs",
+    "claude-hooks.json",
+    "codex-hooks.json",
+    "hermes_plugin.py",
+    "hooks/hooks.json",
+    "openclaw-entry.mjs",
+    "openclaw.plugin.json",
+    "plugin.yaml"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./openclaw-entry.mjs"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    },
+    "build": {
+      "openclawVersion": "2026.3.24-beta.2",
+      "pluginSdkVersion": "2026.3.24-beta.2"
+    }
+  }
+}

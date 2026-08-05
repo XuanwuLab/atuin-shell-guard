@@ -1,0 +1,14 @@
+{
+  "id": "atuin-shell-guard",
+  "name": "Atuin Shell Guard",
+  "description": "Local dry-run bash interpreter that blocks destructive AI shell commands before execution.",
+  "version": "1.0.0",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

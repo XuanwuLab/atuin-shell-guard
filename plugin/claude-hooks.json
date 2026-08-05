@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/atuin-shell-guard.cjs\"",
+            "commandWindows": "node \"${CLAUDE_PLUGIN_ROOT}\\atuin-shell-guard.cjs\"",
+            "timeout": 120,
+            "statusMessage": "atuin-shell-guard: dry-run safety check"
+          }
+        ]
+      }
+    ]
+  }
+}

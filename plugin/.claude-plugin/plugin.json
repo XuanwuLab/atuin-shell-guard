@@ -1,0 +1,12 @@
+{
+  "name": "atuin-shell-guard",
+  "version": "1.0.0",
+  "description": "Verify Bash commands before Claude Code runs them.",
+  "repository": "https://github.com/XuanwuLab/atuin-shell-guard",
+  "hooks": "./claude-hooks.json",
+  "keywords": [
+    "hooks",
+    "bash",
+    "safety"
+  ]
+}
