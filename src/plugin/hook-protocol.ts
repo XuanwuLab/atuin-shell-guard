@@ -209,6 +209,7 @@ export function buildHookOutput(result: ProtectResult | {
   decision: ProtectResult['decision'];
   detail: string;
   needUpdate?: boolean;
+  reasonCodes?: readonly number[];
 }): object | null {
   if (result.decision === 'pass') return null;
 
@@ -227,11 +228,12 @@ export function buildHookReason(result: {
   decision: ProtectResult['decision'];
   detail: string;
   needUpdate?: boolean;
+  reasonCodes?: readonly number[];
 }): string {
   if (result.decision === 'pass') return '';
   const aiInstruction = result.decision === 'stop'
     ? 'To AI: Stop immediately; the system detected dangerous behavior in this conversation, so terminate any active goal or loop, end this turn after explaining the risk to the user, and take no further action until the user decides. If the targeted file truly can be deleted, ask the user to delete it manually for you instead of attempting to bypass shell-guard.'
-    : 'To AI: Reconsider whether this command is intended; if it is truly necessary, do not bypass this guard—pause your current work, including any goal or loop, explain the operation and risks, and ask the user to run it manually; if a safer alternative exists, use it instead. Reconsider this deletion operation from the beginning: determine whether it is truly necessary and verify that every affected file is expected before taking any further action.';
+    : buildBlockAiInstruction(result.reasonCodes);
   const lines = [
     'atuin-shell-guard blocked this command due to destructive risk:',
     result.detail,
@@ -246,6 +248,29 @@ export function buildHookReason(result: {
     );
   }
   return lines.join('\n');
+}
+
+function buildBlockAiInstruction(reasonCodes: readonly number[] | undefined): string {
+  const riskIds = normalizedRiskIds(reasonCodes);
+  const reflection = "To AI: Reconsider whether this shell call is justified. First inspect Atuin's concrete command-impact information; if it is insufficient, investigate the relevant files and state yourself, and consider safer alternatives.";
+  if (riskIds.length === 0) {
+    return `${reflection} This block has no suppressible risk-ID set, so do not attempt to bypass it.`;
+  }
+
+  const joinedIds = riskIds.join(',');
+  return [
+    `Risk IDs: ${joinedIds}`,
+    reflection,
+    'If, after that review, you deliberately decide to ignore this warning and execute the same command, put exactly this directive on the first line of the shell call:',
+    `# atuin-suppress-warning: ${joinedIds}`,
+    "The directive is accepted only when its comma-separated IDs exactly match this command's current risk IDs; missing, extra, duplicate, or malformed IDs do not suppress the block.",
+  ].join('\n');
+}
+
+function normalizedRiskIds(reasonCodes: readonly number[] | undefined): number[] {
+  if (!reasonCodes) return [];
+  return [...new Set(reasonCodes.filter(code => Number.isSafeInteger(code) && code > 0))]
+    .sort((left, right) => left - right);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

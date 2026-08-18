@@ -21,7 +21,7 @@ const require = createRequire(import.meta.url);
 const bigFile = resolve(rootfs, 'tmp', 'bigfile.bin');
 const bigFileSize = 110 * 1024 * 1024;
 const defaultChildTimeoutMs = 30_000;
-const blockAiInstruction = 'To AI: Reconsider whether this command is intended; if it is truly necessary, do not bypass this guard—pause your current work, including any goal or loop, explain the operation and risks, and ask the user to run it manually; if a safer alternative exists, use it instead. Reconsider this deletion operation from the beginning: determine whether it is truly necessary and verify that every affected file is expected before taking any further action.';
+const blockAiInstruction = "To AI: Reconsider whether this shell call is justified. First inspect Atuin's concrete command-impact information; if it is insufficient, investigate the relevant files and state yourself, and consider safer alternatives.";
 const stopAiInstruction = 'To AI: Stop immediately; the system detected dangerous behavior in this conversation, so terminate any active goal or loop, end this turn after explaining the risk to the user, and take no further action until the user decides. If the targeted file truly can be deleted, ask the user to delete it manually for you instead of attempting to bypass shell-guard.';
 const updateNoticeHeading = '## Atuin Shell Guard needs update!';
 const updateAiInstruction = 'To AI: Atuin Shell Guard needs to be updated so it can better protect data in the current environment. You and the user can learn how to update the plugin on GitHub: https://github.com/XuanwuLab/atuin-shell-guard';
@@ -406,6 +406,15 @@ function assertBlocked(command, options = {}) {
   return result;
 }
 
+function assertSoftBlocked(command, options = {}) {
+  const result = runHook(command, options);
+  assertEqual(result.status, 0, 'exit code');
+  assertNestedDenialOnly(result, 'offline risky denial');
+  assertIncludes(reason(result), blockAiInstruction, 'block instruction');
+  assertTruthy(!reason(result).includes(stopAiInstruction), 'block output must not contain the stop instruction');
+  return result;
+}
+
 async function assertBlockedAsync(command, options = {}) {
   const result = await runHookAsync(command, options);
   assertEqual(result.status, 0, 'exit code');
@@ -657,7 +666,9 @@ test('cloud review calls its API only when the config value is exactly yes', asy
         },
       });
       assertEqual(local.status, 0, `${cloudReview} hook exit code`);
-      assertEqual(local.parsed, null, `${cloudReview} preserves the local pass`);
+      assertNestedDenialOnly(local, `${cloudReview} offline risky denial`);
+      assertIncludes(reason(local), blockAiInstruction, `${cloudReview} block instruction`);
+      assertTruthy(!reason(local).includes(stopAiInstruction), `${cloudReview} omits stop instruction`);
       assertEqual(requests.length, 0, `${cloudReview} must not call cloud review`);
     }
 
@@ -671,6 +682,69 @@ test('cloud review calls its API only when the config value is exactly yes', asy
     assertTruthy(reviewed.parsed, 'yes uses the cloud-review decision');
     assertEqual(requests.length, 1, 'yes calls cloud review exactly once');
     decodeReviewRequest(requests[0]);
+  });
+});
+
+test('offline mode blocks risky commands while safe commands still pass', async () => {
+  const risky = await protectWithReview('git reset --hard', { cloudReview: 'no' });
+  assertEqual(risky.severity, 'risky', 'offline severity');
+  assertEqual(risky.decision, 'block', 'offline risky decision');
+  assertTruthy(risky.detail, 'offline block has risk detail');
+
+  assertSoftBlocked('git reset --hard', { cloudReview: 'no' });
+  assertPasses('ls -la', { cloudReview: 'no' });
+});
+
+test('an exact first-line risk-ID declaration suppresses only the matching final block', () => {
+  const command = 'git reset --hard';
+  const directive = '# atuin-suppress-warning: 3001';
+  const blocked = assertSoftBlocked(command, { cloudReview: 'no' });
+  assertIncludes(reason(blocked), 'Risk IDs: 3001', 'block reports its stable risk IDs');
+  assertIncludes(reason(blocked), directive, 'block gives the exact suppression directive');
+  assertIncludes(reason(blocked), 'investigate the relevant files and state yourself', 'block asks AI to investigate missing context');
+  assertIncludes(reason(blocked), 'consider safer alternatives', 'block asks AI to consider alternatives');
+
+  assertPasses(`${directive}\n${command}`, { cloudReview: 'no' });
+  assertPasses(`${directive}\r\n${command}`, { cloudReview: 'no' });
+
+  for (const invalidFirstLine of [
+    '# atuin-suppress-warning: 2011',
+    '# atuin-suppress-warning: 3001,2011',
+    '# atuin-suppress-warning: 3001,3001',
+    '# atuin-suppress-warning: 3001 ',
+  ]) {
+    assertSoftBlocked(`${invalidFirstLine}\n${command}`, { cloudReview: 'no' });
+  }
+  assertSoftBlocked(`# explanatory comment\n${directive}\n${command}`, { cloudReview: 'no' });
+
+  const multiRiskCommand = 'git reset --hard && rm -f docs/report.docx';
+  const multiRiskBlocked = assertSoftBlocked(multiRiskCommand, { cloudReview: 'no' });
+  assertIncludes(reason(multiRiskBlocked), 'Risk IDs: 2012,2032,3001', 'multiple current risk IDs are sorted');
+  assertPasses(
+    `# atuin-suppress-warning: 3001,2012,2032\n${multiRiskCommand}`,
+    { cloudReview: 'no' },
+  );
+  assertSoftBlocked(
+    `# atuin-suppress-warning: 2012,3001\n${multiRiskCommand}`,
+    { cloudReview: 'no' },
+  );
+
+  assertBlocked(
+    '# atuin-suppress-warning: 2011,2031\nrm -f docs/report.docx',
+    { cloudReview: 'no' },
+  );
+});
+
+test('the exact first-line risk-ID declaration applies after a cloud block', async () => {
+  const command = '# atuin-suppress-warning: 3001\ngit reset --hard';
+  await withReviewServer({ decision: 'block' }, async (url, requests) => {
+    const result = await runHookAsync(command, {
+      cloudReview: 'yes',
+      env: { XW_SHELL_GUARD_URL: url },
+    });
+    assertEqual(result.status, 0, 'cloud-suppressed hook exit code');
+    assertEqual(result.parsed, null, 'matching declaration suppresses the final cloud block');
+    assertEqual(requests.length, 1, 'suppression does not skip cloud review');
   });
 });
 
@@ -902,7 +976,7 @@ test('deterministically generated sourced script is blocked', () => {
     assertEqual(local.severity, 'risky', `${name} local severity`);
     assertEqual(local.analysis.affected?.definitePolicyFileCount ?? 0, 0, `${name} definite files`);
     assertTruthy((local.analysis.affected?.conditionalPolicyFileCount ?? 0) > 0, `${name} conditional files`);
-    assertPasses(command);
+    assertSoftBlocked(command);
   });
 });
 
@@ -1138,7 +1212,7 @@ test('PowerShell shell-project destructive fixture resolves pipeline objects to 
   );
   assertEqual(local.analysis.affected?.definitePolicyFileCount ?? 0, 0, 'pipeline loop remains conditional');
   assertEqual(local.analysis.affected?.conditionalPolicyFileCount ?? 0, 1, 'pipeline file retains metadata');
-  assertPasses(command, { toolName: 'PowerShell', platform: 'win32' });
+  assertSoftBlocked(command, { toolName: 'PowerShell', platform: 'win32' });
 });
 
 test('Bash -c nested shell command is blocked', () => {
@@ -1207,7 +1281,7 @@ test('path-qualified command identities retain conditional file statistics', () 
       `${command} conditional affected-file count`,
     );
     assertEqual(directReasons(result).length, 0, `${command} direct-risk count`);
-    assertPasses(command);
+    assertSoftBlocked(command);
   }
 });
 
@@ -1287,7 +1361,7 @@ test('npm run script body retains conditional file statistics', () => {
     assertEqual(local.severity, 'risky', 'package script local severity');
     assertEqual(local.decision, 'pass', 'package script local decision');
     assertEqual(local.analysis.affected?.conditionalPolicyFileCount ?? 0, 1, 'package script affected count');
-    assertPasses('npm run clean');
+    assertSoftBlocked('npm run clean');
   } finally {
     cleanup([packagePath]);
   }
@@ -1322,7 +1396,7 @@ test('fresh .txt is not a local critical stop', () => {
     cleanup([path]);
   }
 });
-test('risky rsync delete passes when cloud review is disabled', () => assertPasses('rsync -a --delete src/ mirror/'));
+test('risky rsync delete is blocked when cloud review is disabled', () => assertSoftBlocked('rsync -a --delete src/ mirror/'));
 
 test('non-executing command modes are locally safe and pass the hook', () => {
   const commands = [
@@ -1416,7 +1490,7 @@ test('non-executing command modes are locally safe and pass the hook', () => {
   }
 });
 
-test('git reset uses typed state effects and unknown dirty state is a risky local pass', () => {
+test('git reset uses typed state effects and offline mode blocks the risky local result', () => {
   const result = protectOnPlatform('git reset --hard --recurse-submodules', 'bash', 'linux');
   assertEqual(result.decision, 'pass', 'hard reset local decision');
   assertEqual(result.severity, 'risky', 'hard reset local severity');
@@ -1431,7 +1505,7 @@ test('git reset uses typed state effects and unknown dirty state is a risky loca
   );
   assertEqual(result.reasons, undefined, 'local result omits complex reasons');
   assertTruthy(!JSON.stringify(result.analysis).includes('<git-tracked-files>'));
-  assertPasses('git reset --hard --recurse-submodules');
+  assertSoftBlocked('git reset --hard --recurse-submodules');
 });
 
 test('typed Git effects are bounded in the actual cloud review request', async () => {
@@ -1562,39 +1636,43 @@ test('executing counterparts retain local risk and hook behavior', () => {
     );
   }
 
-  assertPasses('git clean -fdx');
-  assertPasses('git clean -e -n -fdx');
-  assertPasses('git clean --exclude --dry-run -fdx');
-  assertPasses('git reset --hard');
-  assertPasses('git reset --har');
-  assertPasses('git reset --merge');
-  assertPasses('git reset --keep');
-  assertPasses('command /usr/bin/git -C repo -C nested reset --hard');
-  assertPasses('find src -delete');
-  assertPasses('xargs rm -f');
-  assertPasses('make clean');
-  assertPasses('docker compose down -v');
-  assertPasses('kubectl --context dev delete pod x');
-  assertPasses('kubectl delete pod x --dry-run=none');
-  assertPasses('kubectl delete pod x --dry-run=false');
-  assertPasses('kubectl delete pod x --dry-run=0');
-  assertPasses('kubectl delete -f --dry-run=client');
-  assertPasses('kubectl delete --context --dry-run=server pod x');
-  assertPasses('kubectl -s --dry-run=server delete pod x');
-  assertPasses('helm uninstall rel');
-  assertPasses('terraform destroy');
-  assertPasses('kubectl apply -f --dry-run=client');
-  assertPasses('kubectl apply --field-manager --dry-run=server -f manifest.yaml');
-  assertPasses('rsync -a --delete src/ dst/');
-  assertPasses('rsync -T -n -a --delete src/ dst/');
-  assertPasses('rsync --temp-dir --dry-run -a --delete src/ dst/');
-  assertPasses('tar -xf archive.tar');
-  assertPasses('tar --group -t -xf archive.tar');
-  assertPasses('unzip archive.zip');
-  assertPasses('unzip archive.zip -l');
-  assertPasses('unzip -P-l archive.zip');
-  assertPasses('unzip -l-l archive.zip');
-  assertPasses('unzip -- -l archive.zip');
+  for (const command of [
+    'git clean -fdx',
+    'git clean -e -n -fdx',
+    'git clean --exclude --dry-run -fdx',
+    'git reset --hard',
+    'git reset --har',
+    'git reset --merge',
+    'git reset --keep',
+    'command /usr/bin/git -C repo -C nested reset --hard',
+    'find src -delete',
+    'xargs rm -f',
+    'make clean',
+    'docker compose down -v',
+    'kubectl --context dev delete pod x',
+    'kubectl delete pod x --dry-run=none',
+    'kubectl delete pod x --dry-run=false',
+    'kubectl delete pod x --dry-run=0',
+    'kubectl delete -f --dry-run=client',
+    'kubectl delete --context --dry-run=server pod x',
+    'kubectl -s --dry-run=server delete pod x',
+    'helm uninstall rel',
+    'terraform destroy',
+    'kubectl apply -f --dry-run=client',
+    'kubectl apply --field-manager --dry-run=server -f manifest.yaml',
+    'rsync -a --delete src/ dst/',
+    'rsync -T -n -a --delete src/ dst/',
+    'rsync --temp-dir --dry-run -a --delete src/ dst/',
+    'tar -xf archive.tar',
+    'tar --group -t -xf archive.tar',
+    'unzip archive.zip',
+    'unzip archive.zip -l',
+    'unzip -P-l archive.zip',
+    'unzip -l-l archive.zip',
+    'unzip -- -l archive.zip',
+  ]) {
+    assertSoftBlocked(command);
+  }
 });
 
 test('PowerShell no-clobber and append modes are safe through the Windows hook route', () => {
@@ -2411,7 +2489,7 @@ test('Docker bind mounts are host-write exposure facts, never immediate file ove
     JSON.stringify([riskReasonCodes.CONTAINER_HOST_WRITE_EXPOSURE]),
     'writable bind reason code',
   );
-  assertPasses('docker run -v ./docs:/data image');
+  assertSoftBlocked('docker run -v ./docs:/data image');
 
   const readOnly = protect('docker run -v ./docs:/data:ro image', rootfs, 'bash');
   assertEqual(readOnly.severity, 'safe', 'read-only bind local severity');
@@ -2529,7 +2607,7 @@ test('&& chained rm retains conditional sensitive-file statistics', () => {
   assertEqual(local.severity, 'risky', 'AND-list local severity');
   assertEqual(local.decision, 'pass', 'AND-list local decision');
   assertEqual(local.analysis.affected?.conditionalPolicyFileCount ?? 0, 1, 'AND-list conditional count');
-  assertPasses(command);
+  assertSoftBlocked(command);
 });
 
 
