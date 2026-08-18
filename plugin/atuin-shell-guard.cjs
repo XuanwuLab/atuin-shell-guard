@@ -31,6 +31,8 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var direct_hook_exports = {};
 __export(direct_hook_exports, {
   RISK_REASON_CODES: () => RISK_REASON_CODES,
+  applyBlockSuppression: () => applyBlockSuppression,
+  applyOfflineRiskPolicy: () => applyOfflineRiskPolicy,
   buildHookReason: () => buildHookReason,
   decide: () => decide,
   ensureInstallationConfig: () => ensureInstallationConfig,
@@ -198,7 +200,7 @@ function buildHookOutput(result) {
 }
 function buildHookReason(result) {
   if (result.decision === "pass") return "";
-  const aiInstruction = result.decision === "stop" ? "To AI: Stop immediately; the system detected dangerous behavior in this conversation, so terminate any active goal or loop, end this turn after explaining the risk to the user, and take no further action until the user decides. If the targeted file truly can be deleted, ask the user to delete it manually for you instead of attempting to bypass shell-guard." : "To AI: Reconsider whether this command is intended; if it is truly necessary, do not bypass this guard\u2014pause your current work, including any goal or loop, explain the operation and risks, and ask the user to run it manually; if a safer alternative exists, use it instead. Reconsider this deletion operation from the beginning: determine whether it is truly necessary and verify that every affected file is expected before taking any further action.";
+  const aiInstruction = result.decision === "stop" ? "To AI: Stop immediately; the system detected dangerous behavior in this conversation, so terminate any active goal or loop, end this turn after explaining the risk to the user, and take no further action until the user decides. If the targeted file truly can be deleted, ask the user to delete it manually for you instead of attempting to bypass shell-guard." : buildBlockAiInstruction(result.reasonCodes);
   const lines = [
     "atuin-shell-guard blocked this command due to destructive risk:",
     result.detail,
@@ -213,6 +215,25 @@ function buildHookReason(result) {
     );
   }
   return lines.join("\n");
+}
+function buildBlockAiInstruction(reasonCodes) {
+  const riskIds = normalizedRiskIds(reasonCodes);
+  const reflection = "To AI: Reconsider whether this shell call is justified. First inspect Atuin's concrete command-impact information; if it is insufficient, investigate the relevant files and state yourself, and consider safer alternatives.";
+  if (riskIds.length === 0) {
+    return `${reflection} This block has no suppressible risk-ID set, so do not attempt to bypass it.`;
+  }
+  const joinedIds = riskIds.join(",");
+  return [
+    `Risk IDs: ${joinedIds}`,
+    reflection,
+    "If, after that review, you deliberately decide to ignore this warning and execute the same command, put exactly this directive on the first line of the shell call:",
+    `# atuin-suppress-warning: ${joinedIds}`,
+    "The directive is accepted only when its comma-separated IDs exactly match this command's current risk IDs; missing, extra, duplicate, or malformed IDs do not suppress the block."
+  ].join("\n");
+}
+function normalizedRiskIds(reasonCodes) {
+  if (!reasonCodes) return [];
+  return [...new Set(reasonCodes.filter((code) => Number.isSafeInteger(code) && code > 0))].sort((left, right) => left - right);
 }
 function isRecord(value) {
   return typeof value === "object" && value !== null;
@@ -17207,7 +17228,11 @@ async function protectWithReview(command, cwd, shell = "bash") {
   return reviewProtectResult(result, command, cwd, shell);
 }
 async function reviewProtectResult(result, command, cwd, shell = "bash", conversationId) {
-  if (result.severity === "safe" || !cloudReviewEnabled()) return result;
+  const reviewEnabled = cloudReviewEnabled();
+  const localResult = applyOfflineRiskPolicy(result, reviewEnabled);
+  if (localResult.severity === "safe" || !reviewEnabled) {
+    return applyBlockSuppression(localResult, command);
+  }
   const wireConversationId = conversationIdForWire(conversationId);
   const review = await callBashReview({
     version: VER,
@@ -17229,16 +17254,53 @@ async function reviewProtectResult(result, command, cwd, shell = "bash", convers
     };
   }
   if (review?.decision === "block" || review?.decision === "stop") {
-    return {
+    return applyBlockSuppression({
       ...result,
       decision: review.decision,
       detail: renderReasonCodesDetailed(result.reasonCodes, result.analysis, {
         platform: process.platform
       }),
       needUpdate: review.need_update === true
-    };
+    }, command);
   }
-  return result;
+  return applyBlockSuppression(result, command);
+}
+function applyBlockSuppression(result, command) {
+  if (result.decision !== "block") return result;
+  const declaredIds = parseSuppressionRiskIds(command);
+  const currentIds = normalizedRiskIds2(result.reasonCodes);
+  if (declaredIds === null || currentIds.length === 0 || declaredIds.length !== currentIds.length || declaredIds.some((id, index) => id !== currentIds[index])) {
+    return result;
+  }
+  return {
+    ...result,
+    decision: "pass",
+    detail: ""
+  };
+}
+function parseSuppressionRiskIds(command) {
+  const newline = command.indexOf("\n");
+  const firstLineWithPossibleCr = newline < 0 ? command : command.slice(0, newline);
+  const firstLine = firstLineWithPossibleCr.endsWith("\r") ? firstLineWithPossibleCr.slice(0, -1) : firstLineWithPossibleCr;
+  const match = /^# atuin-suppress-warning: ([1-9]\d*(?:,[1-9]\d*)*)$/.exec(firstLine);
+  if (!match) return null;
+  const ids = match[1].split(",").map((value) => Number(value));
+  if (ids.some((id) => !Number.isSafeInteger(id))) return null;
+  if (new Set(ids).size !== ids.length) return null;
+  return ids.sort((left, right) => left - right);
+}
+function normalizedRiskIds2(reasonCodes) {
+  return [...new Set(reasonCodes.filter((code) => Number.isSafeInteger(code)))].sort((left, right) => left - right);
+}
+function applyOfflineRiskPolicy(result, reviewEnabled = cloudReviewEnabled()) {
+  if (reviewEnabled || result.severity !== "risky" || result.decision !== "pass") return result;
+  return {
+    ...result,
+    decision: "block",
+    detail: renderReasonCodesDetailed(result.reasonCodes, result.analysis, {
+      platform: process.platform
+    })
+  };
 }
 function buildProtectResult(verdict, analysis) {
   const detail = verdict.decision !== "pass" ? renderReasonCodesDetailed(verdict.reasonCodes, analysis, {
@@ -17471,7 +17533,10 @@ async function main() {
     return;
   }
   const localResult = protect(request.command, request.cwd, request.shell);
-  timeoutFallback = buildHookOutput(localResult);
+  timeoutFallback = buildHookOutput(applyBlockSuppression(
+    applyOfflineRiskPolicy(localResult),
+    request.command
+  ));
   const result = await reviewProtectResult(
     localResult,
     request.command,
@@ -17497,6 +17562,8 @@ if (require.main === module) {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   RISK_REASON_CODES,
+  applyBlockSuppression,
+  applyOfflineRiskPolicy,
   buildHookReason,
   decide,
   ensureInstallationConfig,

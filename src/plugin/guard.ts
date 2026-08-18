@@ -1264,7 +1264,11 @@ export async function reviewProtectResult(
   shell: ShellKind = 'bash',
   conversationId?: string,
 ): Promise<ProtectResult> {
-  if (result.severity === 'safe' || !cloudReviewEnabled()) return result;
+  const reviewEnabled = cloudReviewEnabled();
+  const localResult = applyOfflineRiskPolicy(result, reviewEnabled);
+  if (localResult.severity === 'safe' || !reviewEnabled) {
+    return applyBlockSuppression(localResult, command);
+  }
 
   const wireConversationId = conversationIdForWire(conversationId);
   const review = await callBashReview({
@@ -1288,16 +1292,85 @@ export async function reviewProtectResult(
   }
   if (review?.decision === 'block' || review?.decision === 'stop') {
     // A valid cloud verdict is authoritative for reviewable Guardrail operations.
-    return {
+    return applyBlockSuppression({
       ...result,
       decision: review.decision,
       detail: renderReasonCodesDetailed(result.reasonCodes, result.analysis, {
         platform: process.platform,
       }),
       needUpdate: review.need_update === true,
-    };
+    }, command);
   }
-  return result;
+  return applyBlockSuppression(result, command);
+}
+
+/**
+ * A final command-level block may be deliberately suppressed only by an exact
+ * risk-ID declaration on the command's first physical line. Stops are never
+ * suppressible. The comparison is set-based so ID order is not significant,
+ * while duplicates, missing IDs, and extra IDs are rejected.
+ */
+export function applyBlockSuppression(
+  result: ProtectResult,
+  command: string,
+): ProtectResult {
+  if (result.decision !== 'block') return result;
+
+  const declaredIds = parseSuppressionRiskIds(command);
+  const currentIds = normalizedRiskIds(result.reasonCodes);
+  if (
+    declaredIds === null
+    || currentIds.length === 0
+    || declaredIds.length !== currentIds.length
+    || declaredIds.some((id, index) => id !== currentIds[index])
+  ) {
+    return result;
+  }
+
+  return {
+    ...result,
+    decision: 'pass',
+    detail: '',
+  };
+}
+
+function parseSuppressionRiskIds(command: string): number[] | null {
+  const newline = command.indexOf('\n');
+  const firstLineWithPossibleCr = newline < 0 ? command : command.slice(0, newline);
+  const firstLine = firstLineWithPossibleCr.endsWith('\r')
+    ? firstLineWithPossibleCr.slice(0, -1)
+    : firstLineWithPossibleCr;
+  const match = /^# atuin-suppress-warning: ([1-9]\d*(?:,[1-9]\d*)*)$/.exec(firstLine);
+  if (!match) return null;
+
+  const ids = match[1].split(',').map(value => Number(value));
+  if (ids.some(id => !Number.isSafeInteger(id))) return null;
+  if (new Set(ids).size !== ids.length) return null;
+  return ids.sort((left, right) => left - right);
+}
+
+function normalizedRiskIds(reasonCodes: readonly ReasonCode[]): number[] {
+  return [...new Set(reasonCodes.filter(code => Number.isSafeInteger(code)))]
+    .sort((left, right) => left - right);
+}
+
+/**
+ * When cloud review is disabled by configuration, risky observations fail
+ * closed as a command-level block. Critical local evidence remains a stronger
+ * stop.
+ */
+export function applyOfflineRiskPolicy(
+  result: ProtectResult,
+  reviewEnabled: boolean = cloudReviewEnabled(),
+): ProtectResult {
+  if (reviewEnabled || result.severity !== 'risky' || result.decision !== 'pass') return result;
+  return {
+    ...result,
+    decision: 'block',
+    detail: renderReasonCodesDetailed(result.reasonCodes, result.analysis, {
+      platform: process.platform,
+    }),
+  };
 }
 
 function buildProtectResult(verdict: DecideResult, analysis: Analysis): ProtectResult {

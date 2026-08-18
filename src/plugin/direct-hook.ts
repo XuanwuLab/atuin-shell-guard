@@ -4,6 +4,8 @@ import * as fs from 'node:fs';
 import { buildHookOutput, buildHookReason, parseHookRequest } from './hook-protocol.js';
 import { ensureInstallationConfig } from './user-config.js';
 import {
+  applyBlockSuppression,
+  applyOfflineRiskPolicy,
   log,
   protect,
   protectWithReview,
@@ -55,7 +57,10 @@ async function main(): Promise<void> {
   }
 
   const localResult = protect(request.command, request.cwd, request.shell);
-  timeoutFallback = buildHookOutput(localResult);
+  timeoutFallback = buildHookOutput(applyBlockSuppression(
+    applyOfflineRiskPolicy(localResult),
+    request.command,
+  ));
   const result = await reviewProtectResult(
     localResult,
     request.command,
@@ -72,6 +77,8 @@ async function main(): Promise<void> {
 }
 
 export {
+  applyBlockSuppression,
+  applyOfflineRiskPolicy,
   buildHookReason,
   decide,
   ensureInstallationConfig,
